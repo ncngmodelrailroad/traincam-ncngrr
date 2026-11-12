@@ -131,6 +131,35 @@
     group: "{{ trainview_user }}"
     mode: "0755"
 
+- name: Disable Kiyo Pro USB2 link power management on older kernels
+  tags: trainview_usb_lpm
+  ansible.builtin.copy:
+    src: 99-traincam-kiyo-lpm.rules
+    dest: /etc/udev/rules.d/99-traincam-kiyo-lpm.rules
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  register: trainview_kiyo_lpm_rule
+
+- name: Reload USB camera device rules
+  tags: trainview_usb_lpm
+  ansible.builtin.command: udevadm control --reload-rules
+  changed_when: true
+  when:
+    - trainview_kiyo_lpm_rule.changed
+    - not (traincam_image_build | default(false) | bool)
+
+- name: Apply Kiyo Pro device rule without resetting USB
+  tags: trainview_usb_lpm
+  ansible.builtin.command: >-
+    udevadm trigger --action=change --subsystem-match=usb
+    --attr-match=idVendor=1532 --attr-match=idProduct=0e05 --settle
+  changed_when: true
+  when:
+    - trainview_kiyo_lpm_rule.changed
+    - not (traincam_image_build | default(false) | bool)
+
 - name: Find Chromium executable
   ansible.builtin.stat:
     path: /usr/bin/chromium-browser

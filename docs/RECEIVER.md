@@ -97,6 +97,30 @@ USB3 U1/U2 controls reported `disabled` during inspection, so the kernel's
 failed U1-enable messages alone are not proof that active link power saving
 caused the fault. No kernel USB quirk was applied.
 
+### Kiyo Pro link power management
+
+Linux has a [device-specific NO_LPM fix for the Razer Kiyo Pro](https://github.com/torvalds/linux/commit/8b7a42ecdcdeb55580d9345412f7f8fc5aca3f6c)
+because its firmware can stop responding after link power transitions.
+For older kernels, the role's `99-traincam-kiyo-lpm.rules` disables
+`power/usb2_hardware_lpm` only for
+`1532:0e05`, on connection or a device change event. This does not reset
+the camera, its host controller, or the root SSD. USB2 L1 link power management
+is separate from runtime autosuspend: `runtime_suspended_time: 0` does not
+mean link power management is off.
+
+This rule is a USB2 workaround, not a substitute for a kernel containing the
+[Raspberry Pi backport](https://github.com/raspberrypi/linux/commit/3ac9c06f80ada8fb91e79f4bbdc995fa1a27e023),
+especially before moving the camera back to USB3. On fixed kernels the rule
+skips the missing attribute. Do not blindly add `usbcore.quirks=1532:0e05:k`:
+that parameter toggles the built-in flag and can undo the fix after an upgrade.
+Two-second capture pauses still occurred with LPM disabled on November 12, 2026,
+so this workaround does not establish that every dropout is fixed.
+Persistent USB descriptor errors still require cable/camera/port isolation;
+a clean short observation or a successful replug is not proof of repair.
+
+Deploy only this rule without restarting the displays or capture services:
+`ansible-playbook -i inventory kiosk.yml --tags trainview_usb_lpm`.
+
 ## Before the Christmas fair
 
 ```bash
