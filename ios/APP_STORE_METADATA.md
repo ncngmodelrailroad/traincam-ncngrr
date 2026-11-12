@@ -106,6 +106,10 @@ Initial release.
 
 ## Screenshot Requirements
 
+The Simulator test `TrainCamUITests/testCaptureAppStoreScreenshots` writes to
+`ios/screenshots/` in its source checkout, matching the Fastlane upload path.
+It creates the directory and reports write errors instead of silently skipping images.
+
 ### Required Device Sizes
 
 | Device Class          | Display Size | Resolution (portrait)  | Required |

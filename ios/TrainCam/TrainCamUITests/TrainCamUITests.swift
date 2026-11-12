@@ -84,12 +84,17 @@ final class TrainCamUITests: XCTestCase {
     // MARK: - App Store Screenshots
 
     func testCaptureAppStoreScreenshots() throws {
-        let dir = "/Users/djdefi/src/traincam-ncngrr/ios/screenshots"
+        let dir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("screenshots", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         sleep(3)
 
         // Screenshot 1: Camera list
-        saveScreenshot("01_camera_list", to: dir)
+        try saveScreenshot("01_camera_list", to: dir)
 
         // Screenshot 2: About sheet
         let aboutButton = app.navigationBars.buttons.matching(
@@ -98,7 +103,7 @@ final class TrainCamUITests: XCTestCase {
         if aboutButton.waitForExistence(timeout: 5) {
             aboutButton.tap()
             sleep(1)
-            saveScreenshot("02_about", to: dir)
+            try saveScreenshot("02_about", to: dir)
             let done = app.buttons["Done"]
             if done.waitForExistence(timeout: 2) { done.tap() }
             sleep(1)
@@ -109,18 +114,18 @@ final class TrainCamUITests: XCTestCase {
         if card.waitForExistence(timeout: 5) {
             card.tap()
             sleep(2)
-            saveScreenshot("03_camera_detail", to: dir)
+            try saveScreenshot("03_camera_detail", to: dir)
         }
 
         // Screenshot 4: Try tapping the stream area or scrolling to telemetry
         app.swipeUp()
         sleep(1)
-        saveScreenshot("04_telemetry", to: dir)
+        try saveScreenshot("04_telemetry", to: dir)
     }
 
-    private func saveScreenshot(_ name: String, to directory: String) {
+    private func saveScreenshot(_ name: String, to directory: URL) throws {
         let screenshot = XCUIScreen.main.screenshot()
-        let url = URL(fileURLWithPath: "\(directory)/\(name).png")
-        try? screenshot.pngRepresentation.write(to: url)
+        let url = directory.appendingPathComponent("\(name).png")
+        try screenshot.pngRepresentation.write(to: url)
     }
 }
