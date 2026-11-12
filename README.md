@@ -43,9 +43,14 @@ open http://traincam1.local:8080/viewer.html
 ### ESP32 (Arduino)
 
 1. `cp CameraWebServer/secrets.h.example CameraWebServer/secrets.h` and set your WiFi credentials in it (it's gitignored — this repo is public)
-2. Open `CameraWebServer/CameraWebServer.ino` in Arduino IDE
-3. Upload to XIAO ESP32S3 Sense
-4. Open the `http://traincam-xxxxxx.local/stream` URL printed over Serial
+2. `pio run -t upload` from the repo root (PlatformIO; uses larger TCP buffers for a faster stream — see `docs/HARDWARE.md`), or open `CameraWebServer/CameraWebServer.ino` in Arduino IDE and upload to the XIAO ESP32S3 Sense
+3. Open the `http://traincam-xxxxxx.local/stream` URL printed over Serial
+
+### Pi 5 display receiver
+
+See [docs/RECEIVER.md](docs/RECEIVER.md) for the two-screen kiosk, the supported
+Razer camera kernel baseline, and updates through a laptop when the layout has
+no internet.
 
 ## Project Structure
 

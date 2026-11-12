@@ -21,12 +21,28 @@ grep -q 'ExecStartPre=/bin/rm -rf %t/traincam-chromium-profile-1 %t/traincam-chr
 python3 - <<'PY'
 import io
 import subprocess
+import textwrap
 from pathlib import Path
+
+tasks = Path("ansible/roles/trainview/tasks/main.yml").read_text()
+startup = tasks.split("- name: Start kiosk from labwc session\n", 1)[1].split("\n- name:", 1)[0]
+startup = textwrap.dedent(startup.split("    content: |\n", 1)[1])
+result = subprocess.run(
+    ["/bin/sh", "-c",
+     'systemctl() { printf "systemctl %s\\n" "$*"; }\n'
+     'kanshi() { printf "kanshi\\n"; }\n' + startup + "\nwait\n"],
+    capture_output=True, text=True, check=True, timeout=5,
+)
+assert sorted(result.stdout.splitlines()) == [
+    "kanshi",
+    "systemctl --user daemon-reload",
+    "systemctl --user restart traincam-kiosk.service",
+], "the custom desktop autostart must launch both the display profile manager and browser"
 
 unit = Path("ansible/roles/trainview/templates/traincam-kiosk.service.j2").read_text()
 first, second = unit.split("--class=TrainCam-HDMI-2")
-assert "output=usb" in first, "the larger HDMI-1 display must show USB"
-assert "output=1" in second, "the smaller HDMI-2 display must show train/visitor content"
+assert "output=1" in first, "the larger HDMI-1 display must show train/visitor content"
+assert "output=usb" in second, "the smaller HDMI-2 display must show USB"
 
 path = Path("ansible/roles/trainview/templates/esp32-relay.py.j2")
 source = path.read_text().replace("{{ trainview_esp32_camera }}", "camera").replace(
@@ -35,8 +51,16 @@ source = path.read_text().replace("{{ trainview_esp32_camera }}", "camera").repl
 relay = {"__name__": "test"}
 exec(compile(source, path, "exec"), relay)
 jpeg = b"\xff\xd8test\xff\xd9"
-stream = io.BytesIO(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 8\r\n\r\n" + jpeg)
+header = b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 8\r\n\r\n"
+stream = io.BytesIO(header + jpeg)
 assert relay["read_frame"](stream) == jpeg
+for size in (0, 1, len(jpeg) - 1):
+    try:
+        relay["read_frame"](io.BytesIO(header + jpeg[:size]))
+    except EOFError:
+        pass
+    else:
+        raise AssertionError(f"relay forwarded an incomplete JPEG ({size}/{len(jpeg)} bytes)")
 assert 'path = self.path.partition("?")[0]' in source
 assert 'if path == "/status":' in source
 assert 'if path != "/stream":' in source

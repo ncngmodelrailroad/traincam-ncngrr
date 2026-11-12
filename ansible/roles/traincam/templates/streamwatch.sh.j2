@@ -1,0 +1,66 @@
+#!/bin/bash
+# Managed by Ansible (traincam role)
+#
+# Restart the stream when video stops flowing but nothing has exited.
+#
+# rpicam-vid logs "Device timeout detected, attempting a restart" and tries to
+# recover by itself (traincam1, 2026-09-29: four in 90s, then it died on
+# "failed to write output bytes" and Restart=always took over). If it wedges
+# instead of dying, every process stays up, MediaMTX keeps the path, viewers
+# freeze, and neither Restart=always, netwatch nor the hardware watchdog sees
+# it. The honest signal is bytes: ffmpeg reads H.264 from rpicam-vid's stdout.
+set -euo pipefail
+
+SERVICE="${TRAINCAM_STREAMWATCH_SERVICE:-{{ traincam_service_name }}.service}"
+STATE_FILE="${TRAINCAM_STREAMWATCH_STATE:-/run/traincam-streamwatch.state}"
+THRESHOLD="${TRAINCAM_STREAMWATCH_THRESHOLD:-{{ traincam_streamwatch_threshold }}}"
+INTERVAL="${TRAINCAM_STREAMWATCH_INTERVAL:-{{ traincam_streamwatch_interval_sec }}}"
+RESTART_CMD="${TRAINCAM_STREAMWATCH_RESTART_CMD:-systemctl restart $SERVICE}"
+LOG_CMD="${TRAINCAM_STREAMWATCH_LOG_CMD:-logger -t traincam-streamwatch}"
+
+log() { $LOG_CMD "$*"; }
+
+# Prints "<ffmpeg pid> <bytes read>", or nothing while the service is between
+# processes. Injectable so the logic can be tested without a camera.
+sample() {
+    if [ -n "${TRAINCAM_STREAMWATCH_SAMPLE_CMD:-}" ]; then
+        $TRAINCAM_STREAMWATCH_SAMPLE_CMD
+        return 0
+    fi
+    local main pid
+    main=$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || echo 0)
+    [ "${main:-0}" != 0 ] || return 0
+    pid=$(pgrep -P "$main" -x ffmpeg | head -n1 || true)
+    [ -n "$pid" ] || return 0
+    echo "$pid $(awk '/^rchar:/ {print $2}' "/proc/$pid/io" 2>/dev/null || echo 0)"
+}
+
+read -r pid bytes <<<"$(sample)" || true
+if [ -z "${pid:-}" ]; then
+    # Starting or restarting: systemd owns that, nothing to judge yet.
+    rm -f "$STATE_FILE"
+    exit 0
+fi
+
+prev_pid="" prev_bytes=0 stalls=0
+if [ -f "$STATE_FILE" ]; then
+    read -r prev_pid prev_bytes stalls <"$STATE_FILE" || true
+fi
+case "$stalls" in ''|*[!0-9]*) stalls=0 ;; esac
+case "$prev_bytes" in ''|*[!0-9]*) prev_bytes=0 ;; esac
+
+if [ "$pid" != "$prev_pid" ] || [ "$bytes" -gt "$prev_bytes" ]; then
+    echo "$pid $bytes 0" >"$STATE_FILE"
+    exit 0
+fi
+
+stalls=$((stalls + 1))
+if [ "$stalls" -lt "$THRESHOLD" ]; then
+    echo "$pid $bytes $stalls" >"$STATE_FILE"
+    log "no video from the camera ($stalls/$THRESHOLD)"
+    exit 0
+fi
+
+log "no video from the camera for $((stalls * INTERVAL))s with ffmpeg $pid still running, restarting $SERVICE"
+rm -f "$STATE_FILE"
+$RESTART_CMD

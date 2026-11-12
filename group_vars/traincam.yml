@@ -189,6 +189,10 @@ mediamtx_checksum: "sha256:c9ad9ae5f93c1a84a3a52055f630687498b98566e735b5177ed60
 traincam_watchdog_sec: 14
 # Persistent journal, bounded so an all-day run can't fill the card.
 traincam_journal_max_use: 64M
+# traincam1 runs overlayroot=tmpfs since 2026-08-31 (raspi-config do_overlayfs),
+# so the "persistent" journal lives in RAM anyway. Keep it small there.
+traincam_root_overlay: true
+traincam_journal_runtime_max_use: 8M
 
 # Network watchdog. The hardware watchdog above only catches a dead kernel.
 # When the BCM43430's SDIO bus wedges the kernel stays perfectly healthy and
@@ -198,6 +202,12 @@ traincam_journal_max_use: 64M
 # the show can't reboot every camera in the hall.
 traincam_netwatch_interval_sec: 30
 traincam_netwatch_threshold: 10
+
+# Stream watchdog: restart the capture service when ffmpeg stops receiving
+# H.264 from rpicam-vid while both are still running. threshold x interval =
+# how long a frozen picture is tolerated. The service is back in ~2s.
+traincam_streamwatch_interval_sec: 10
+traincam_streamwatch_threshold: 3
 # SDIO clock for the WiFi chip, in MHz. Default is 50 (measured). Halving it
 # widens setup/hold margins, which is the cheapest defence against the -110
 # bus timeouts, and costs nothing at our bitrate.

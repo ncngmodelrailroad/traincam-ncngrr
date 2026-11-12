@@ -1,6 +1,6 @@
 'use strict';
 const output = new URLSearchParams(location.search).get('output') || '1';
-const ids = output === 'usb' ? ['usb', 'visitor'] : ['pi', 'esp32', 'visitor'];
+const ids = output === 'usb' ? ['usb', 'visitor'] : ['esp32', 'pi', 'visitor'];
 for (const id of ['pi', 'esp32', 'usb', 'visitor']) {
   if (!ids.includes(id)) document.getElementById(id).remove();
 }
@@ -45,6 +45,11 @@ window.addEventListener('message', event => {
   refreshLayout();
 });
 refreshLayout();
+// Assign URLs only after screen selection so discarded viewers never connect.
+for (const feed of feeds) {
+  const frame = feed.element.querySelector('iframe');
+  frame.src = frame.dataset.src;
+}
 setInterval(refreshLayout, 1000);
 setInterval(() => {
   const feed = feeds.find(feed => feed.id === selected);

@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Guards the ESP32 backup camera's unattended-operation properties.
 #
-# The firmware cannot be exercised from CI - it needs the board - so these are
-# source guards over the three defects that would each be a guaranteed field
-# failure at the show. All three behaviours WERE verified on hardware once
-# (see the commit message); this file exists so they cannot silently regress.
+# Hardware recovery uses source checks; the frame limiter also runs on the host
+# with a changing FPS value to reproduce concurrent control updates.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -119,10 +117,86 @@ check "httpd purges stale sockets" "$got" "yes"
 # /status is the only way to tell a healthy board from one that has been
 # rebooting all afternoon - boots and wifi_restarts live in RTC memory and
 # survive the soft resets above.
-for token in "wifi_restarts" "min_heap" "uptime_s"; do
+for token in "wifi_restarts" "min_heap" "uptime_s" "battery_mv" "temperature_c" "sensor_pid"; do
   if grep -qF "$token" "$HTTPD"; then got=yes; else got=no; fi
   check "/status reports $token" "$got" "yes"
 done
+
+for token in "analogReadMilliVolts" "BATTERY_CALIBRATION" "16.0f) * 2.0f" \
+             "TELEMETRY_INTERVAL_MS" "temperature_sensor_get_celsius"; do
+  if grep -qF "$token" "$INO"; then got=yes; else got=no; fi
+  check "battery divider readout: $token present" "$got" "yes"
+done
+
+if grep -qF "readBatteryMillivolts()" "$HTTPD"; then got=no; else got=yes; fi
+check "/status uses cached telemetry" "$got" "yes"
+
+# Low-light tuning has to happen live at the layout, not through flash cycles.
+for knob in gainceiling aec2 ae_level aec_value agc_gain awb wb_mode lenc; do
+  if grep -qF "{\"$knob\"," "$HTTPD"; then got=yes; else got=no; fi
+  check "/control accepts $knob" "$got" "yes"
+done
+
+if grep -qF '"fps", val' "$HTTPD" && grep -qF "static std::atomic<int> maxFps{20};" "$HTTPD"; then got=yes; else got=no; fi
+check "/control accepts fps, default cap 20" "$got" "yes"
+if grep -qF '"tx_power", val' "$HTTPD" && grep -qF "esp_wifi_set_max_tx_power(52);" "$INO" && grep -qF "setCpuFrequencyMhz(160);" "$INO"; then got=yes; else got=no; fi
+check "cool defaults 13dBm/160MHz, tunable via /control" "$got" "yes"
+
+if grep -qF "config.jpeg_quality = 9;" "$CODE"; then got=yes; else got=no; fi
+check "PSRAM JPEG quality defaults to 9" "$got" "yes"
+if grep -qF "s->id.PID == OV2640_PID &&" "$CODE" \
+   && grep -qF "s->set_gainceiling(s, GAINCEILING_4X) != 0" "$CODE"; then got=yes; else got=no; fi
+check "OV2640 uses a checked 4x automatic gain ceiling" "$got" "yes"
+
+if grep -qF "config.xclk_freq_hz = 20000000;" "$CODE"; then got=yes; else got=no; fi
+check "camera uses 20MHz XCLK to avoid measured XGA color stripes" "$got" "yes"
+
+if grep -qFx "  CONFIG_LWIP_TCP_TMR_INTERVAL=25" "$ROOT/platformio.ini"; then got=yes; else got=no; fi
+check "PlatformIO uses the measured 25ms TCP recovery timer" "$got" "yes"
+
+python3 - "$HTTPD" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+source = Path(sys.argv[1]).read_text()
+limiter = source.split("  while (true) {\n", 1)[1].split(
+    "    lastFrameUs = esp_timer_get_time();", 1
+)[0]
+program = r"""
+#include <cassert>
+#include <cstdint>
+struct Fps {
+  int value, next, reads;
+  int load() { ++reads; int result = value; value = next; return result; }
+  operator int() { return load(); }
+};
+int64_t waitedMs = -1;
+int64_t esp_timer_get_time() { return 1000; }
+void vTaskDelay(int64_t ms) { waitedMs = ms; }
+#define pdMS_TO_TICKS(ms) (ms)
+void limit(Fps &maxFps, int64_t lastFrameUs) {
+""" + limiter + r"""
+}
+int main() {
+  Fps disabling{20, 0, 0};
+  limit(disabling, 0);
+  assert(disabling.reads == 1 && waitedMs == 49);
+  waitedMs = -1;
+  Fps enabling{0, 20, 0};
+  limit(enabling, 0);
+  assert(enabling.reads == 1 && waitedMs == -1);
+}
+"""
+with tempfile.TemporaryDirectory(prefix="traincam-fps-") as directory:
+    path = Path(directory)
+    (path / "fps.cpp").write_text(program)
+    subprocess.run(["c++", "-std=c++11", "-Wall", "-Wextra", "-Werror",
+                    str(path / "fps.cpp"), "-o", str(path / "fps")], check=True)
+    subprocess.run([str(path / "fps")], check=True)
+print("PASS: FPS changes use one snapshot without dividing by a new zero value")
+PY
 
 echo
 if [[ "$fail" -gt 0 ]]; then
