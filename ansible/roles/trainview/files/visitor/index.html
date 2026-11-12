@@ -29,17 +29,27 @@
     <p class="ask">Questions? Ask a volunteer here at the layout.</p>
   </section>
 </main>
-<footer><span>Nevada County Fairgrounds · Grass Valley, California</span><span id="page">1 / 4</span><button id="pause" type="button">Pause slides</button></footer>
+<footer><span>Nevada County Fairgrounds · Grass Valley, California</span><span id="page">1 / 8</span><button id="pause" type="button">Pause slides</button></footer>
 <script>
+const messages = [
+  { tag:'EXPLORE THE RAILROAD', title:'Explore our railroad.', description:'Photos, local history and upcoming openings.', action:'Scan to explore', url:'https://ncngmodelrailroad.org/', qr:'website-qr.png' },
+  { tag:'FOLLOW THE ORIGINAL ROUTE', title:'Follow the old route.', description:'A historic reconstruction, not a trail or model track plan.', action:'Scan for the map', url:'https://ncngmodelrailroad.org/map/', qr:'map-qr.png' },
+  { tag:'VOLUNTEERS WELCOME', title:'Volunteer with us.', description:'Run trains. Build scenery. Welcome visitors.', action:'Scan to join in', url:'https://ncngmodelrailroad.org/volunteer/', qr:'volunteer-qr.png' },
+  { tag:'DONATIONS & SPONSORSHIP', title:'Help the layout.', description:'Ask us about donations or sponsorship.', action:'Scan to help', url:'https://ncngmodelrailroad.org/donate/', qr:'donate-qr.png' },
+];
 const slides = [
-  { tag:'EXPLORE THE RAILROAD', title:'Explore our railroad.', description:'Photos, local history and upcoming openings.', action:'Scan to explore', url:'https://ncngmodelrailroad.org/', qr:'website-qr.png', photo:'layout.jpg', alt:'Town, tracks and mountain scenery on the N.C.N.G. layout', caption:'A little railroad. A lot of local history.' },
-  { tag:'FOLLOW THE ORIGINAL ROUTE', title:'Follow the old route.', description:'A historic reconstruction, not a trail or model track plan.', action:'Scan for the map', url:'https://ncngmodelrailroad.org/map/', qr:'map-qr.png', photo:'trestle.jpg', alt:'A model train crossing the Bear River Bridge trestle', caption:'Discover the places behind the miniature scenes.' },
-  { tag:'VOLUNTEERS WELCOME', title:'Volunteer with us.', description:'Run trains. Build scenery. Welcome visitors.', action:'Scan to join in', url:'https://ncngmodelrailroad.org/volunteer/', qr:'volunteer-qr.png', photo:'layout.jpg', alt:'Town, tracks and mountain scenery on the N.C.N.G. layout', caption:'There is a place for your skills and curiosity.' },
-  { tag:'DONATIONS & SPONSORSHIP', title:'Help the layout.', description:'Ask us about donations or sponsorship.', action:'Scan to help', url:'https://ncngmodelrailroad.org/donate/', qr:'donate-qr.png', photo:'engine.jpg', alt:'Model locomotive number 8 approaching through the layout scenery', caption:'Thank you for supporting a volunteer-built railroad.' },
+  { photo:'layout.jpg', alt:'Town, tracks and mountain scenery on the N.C.N.G. layout', caption:'A little railroad. A lot of local history.' },
+  { photo:'trestle.jpg', alt:'A model train crossing the Bear River Bridge trestle', caption:'Discover the places behind the miniature scenes.' },
+  { photo:'repair-yard.jpg', alt:'Miniature workers beside freight cars, spare wheelsets and stacked lumber in the repair yard', caption:'There is a place for your skills and curiosity.' },
+  { photo:'engine.jpg', alt:'Model locomotive number 8 approaching through the layout scenery', caption:'Thank you for supporting a volunteer-built railroad.' },
+  { photo:'depot.jpg', alt:'Two-story model depot with a covered platform, miniature passengers and vintage cars', caption:'A busy depot, down to the smallest details.' },
+  { photo:'mine.jpg', alt:'Timber ore bin, mine tunnel and wooden shed on a snowy model hillside', caption:'Mining scenes bring the railroad landscape to life.' },
+  { photo:'car-show.jpg', alt:'Colorful vintage model cars lined up beside a green passenger coach and a Victorian-style house', caption:'Discover the little stories beside the tracks.' },
+  { photo:'christmas-train.jpg', alt:'Locomotive number 9 passing the Kidder house decorated with snowmen, garlands and a Christmas tree', caption:'Christmas comes to the N.C.N.G. layout.' },
 ];
 let index = 0, paused = false;
 function showSlide() {
-  const slide = slides[index];
+  const slide = { ...messages[index % messages.length], ...slides[index] };
   for (const [id, key] of [['eyebrow','tag'], ['title','title'], ['description','description'], ['action','action'], ['caption','caption']]) document.getElementById(id).textContent = slide[key];
   const photo = document.getElementById('photo');
   photo.src = slide.photo; photo.alt = slide.alt;
@@ -53,7 +63,12 @@ document.getElementById('pause').onclick = () => {
   paused = !paused;
   document.getElementById('pause').textContent = paused ? 'Resume slides' : 'Pause slides';
 };
-setInterval(() => { if (!paused) { index = (index + 1) % slides.length; showSlide(); } }, 20000);
+setInterval(() => {
+  // A CSS-hidden iframe still runs timers; keep its heartbeat, not its slideshow.
+  if (paused || (window.frameElement && !window.frameElement.getClientRects().length)) return;
+  index = (index + 1) % slides.length;
+  showSlide();
+}, 20000);
 const heartbeat = () => window.parent.postMessage({ type:'traincam-viewer-heartbeat', live:false }, location.origin);
 heartbeat();
 setInterval(heartbeat, 2000);

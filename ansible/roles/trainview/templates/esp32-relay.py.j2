@@ -23,7 +23,10 @@ def read_frame(stream):
         if line.lower().startswith(b"content-length:"):
             length = int(line.split(b":", 1)[1])
         elif line in (b"\r\n", b"\n") and length is not None:
-            return stream.read(length)
+            frame = stream.read(length)
+            if len(frame) != length:
+                raise EOFError(f"incomplete JPEG: {len(frame)} of {length} bytes")
+            return frame
 
 
 def ingest():

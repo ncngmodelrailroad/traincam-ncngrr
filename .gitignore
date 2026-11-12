@@ -46,3 +46,11 @@ id_rsa*
 
 # ESP32 WiFi credentials - never commit (repo is public)
 CameraWebServer/secrets.h
+
+# PlatformIO (pioarduino) build output, generated at the repo root
+.pio/
+/CMakeLists.txt
+/dependencies.lock
+/managed_components/
+/sdkconfig.*
+/.dummy/

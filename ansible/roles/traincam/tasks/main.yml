@@ -361,6 +361,11 @@
       line: 'dtparam=watchdog=on'
     - regexp: '^dtparam=sdio_overclock='
       line: 'dtparam=sdio_overclock={{ traincam_sdio_overclock }}'
+    # libcamera allocates from Linux CMA, not gpu_mem, so anything above the
+    # firmware default (64 on <1 GB boards) is RAM taken from the OS. The image
+    # shipped 128; that was 64 MB of a ~110 MB margin on 2026-09-29.
+    - regexp: '^gpu_mem='
+      line: 'gpu_mem=64'
   loop_control:
     label: "{{ item.line }}"
 
@@ -404,20 +409,47 @@
   notify: Reload systemd manager
 
 # The last hang left no evidence because the journal only lived in RAM.
-- name: Keep the journal across reboots
+# Under overlayroot=tmpfs "persistent" still lands in RAM and is lost on reset,
+# but journald preallocates 8M files there: 24M of a ~110M budget on 2026-09-29.
+- name: Configure journal storage
   ansible.builtin.copy:
     content: |
       # Managed by Ansible (traincam role)
       [Journal]
+      {% if traincam_root_overlay | bool %}
+      Storage=volatile
+      RuntimeMaxUse={{ traincam_journal_runtime_max_use }}
+      RuntimeMaxFileSize=2M
+      {% else %}
       Storage=persistent
       # Bounded so an unattended run cannot fill the card or chew SD endurance.
       SystemMaxUse={{ traincam_journal_max_use }}
       SystemMaxFileSize=8M
+      {% endif %}
     dest: /etc/systemd/journald.conf.d/10-traincam-persist.conf
     owner: root
     group: root
     mode: '0644'
   notify: Restart journald
+
+# Audio is off (dtparam=audio=off), yet every SSH login started PipeWire,
+# WirePlumber and pipewire-pulse: ~15-30 MB and a burst of SD page faults on a
+# Pi with ~110 MB available. Measured on traincam1 2026-09-29.
+- name: Mask the desktop audio stack for all user sessions
+  ansible.builtin.file:
+    src: /dev/null
+    dest: "/etc/systemd/user/{{ item }}"
+    state: link
+    force: true
+  loop:
+    - pipewire.socket
+    - pipewire.service
+    - pipewire-pulse.socket
+    - pipewire-pulse.service
+    - wireplumber.service
+    - filter-chain.service
+    - pulseaudio.socket
+    - pulseaudio.service
 
 # WiFi power save cycles the chip's KSO (Keep SDIO On) register. Waking it can
 # fail under load and heat, and a failed wake reports the same -110 that killed
@@ -495,6 +527,54 @@
 - name: Enable the network watchdog timer
   ansible.builtin.systemd:
     name: traincam-netwatch.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# A wedged rpicam-vid keeps every process alive while the picture freezes, so
+# neither Restart=always, netwatch nor the hardware watchdog notices.
+- name: Deploy the stream watchdog
+  ansible.builtin.template:
+    src: streamwatch.sh.j2
+    dest: /usr/local/bin/traincam-streamwatch
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Deploy the stream watchdog unit
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (traincam role)
+      [Unit]
+      Description=TrainCam stream watchdog
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/traincam-streamwatch
+    dest: /etc/systemd/system/traincam-streamwatch.service
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Deploy the stream watchdog timer
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (traincam role)
+      [Unit]
+      Description=Run the TrainCam stream watchdog every {{ traincam_streamwatch_interval_sec }}s
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec={{ traincam_streamwatch_interval_sec }}s
+      AccuracySec=1s
+      [Install]
+      WantedBy=timers.target
+    dest: /etc/systemd/system/traincam-streamwatch.timer
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Enable the stream watchdog timer
+  ansible.builtin.systemd:
+    name: traincam-streamwatch.timer
     enabled: true
     state: started
     daemon_reload: true

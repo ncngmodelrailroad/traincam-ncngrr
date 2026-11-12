@@ -73,8 +73,20 @@ try {
       (_, variable) => vars[variable.trim()] ?? '18083');
     fs.writeFileSync(path.join(site, name), source);
   }
-  start('python3', [path.join(root, 'ansible/roles/trainview/files/kiosk-server.py'),
-    '--directory', site, '--port', '18081']);
+  // Delay the selector so eager iframe requests cannot be hidden by a fast script load.
+  start('python3', ['-u', '-c', `
+from functools import partial
+from http.server import ThreadingHTTPServer
+import runpy, sys, time
+kiosk = runpy.run_path(sys.argv[1])
+class Handler(kiosk["Handler"]):
+ def do_GET(self):
+  if self.path == "/visitor/kiosk.js": time.sleep(1)
+  super().do_GET()
+with ThreadingHTTPServer(("127.0.0.1",18081),partial(Handler,directory=sys.argv[2])) as server:
+ server.health = kiosk["Health"]()
+ server.serve_forever()
+`, path.join(root, 'ansible/roles/trainview/files/kiosk-server.py'), site]);
   // A real multipart stream with a controllable stale-frame status endpoint.
   start('python3', ['-u', '-c', `
 import json, sys, time
@@ -125,6 +137,12 @@ ThreadingHTTPServer(("127.0.0.1",18083),Handler).serve_forever()
     return (await client('Runtime.evaluate', { expression:'selected', returnByValue:true })).result.value;
   }
   await until(async () => await selected(usb) === 'usb', 'USB first frame and stable recovery');
+  await until(async () => await selected(first) === 'esp32', 'ESP32 first frame and stable recovery');
+  const viewerRequests = fs.readFileSync(path.join(dir, 'child-0.log'), 'utf8')
+    .split('\n').filter(line => line.includes('"GET /viewer.html?'));
+  assert.equal(viewerRequests.length, 3,
+    `Only assigned camera pages should load: ESP32 and Pi fallback on output 1, USB on output usb. Got:\n${viewerRequests.join('\n')}`);
+  console.log('PASS: only three assigned camera pages load across both screens');
   const cameraLayout = await usb('Runtime.evaluate', { expression:`(() => {
     const f = document.querySelector('#usb iframe');
     const r = f.getBoundingClientRect(), d = f.contentDocument, w = f.contentWindow;
@@ -136,8 +154,28 @@ ThreadingHTTPServer(("127.0.0.1",18083),Handler).serve_forever()
   assert.equal(cameraLayout.result.value.fit, 'contain');
   assert(cameraLayout.result.value.badge >= 24);
   console.log('PASS: real MJPEG frames select the USB camera');
+  async function visitorSlide(client) {
+    return (await client('Runtime.evaluate', { expression:`(() => {
+      const frame = document.querySelector('#visitor iframe');
+      return { visible:frame.checkVisibility(), index:frame.contentWindow.eval('index') };
+    })()`, returnByValue:true })).result.value;
+  }
+  const hiddenSlide = await visitorSlide(usb);
+  assert.equal(hiddenSlide.visible, false);
+  await sleep(21000);
+  assert.equal(await selected(usb), 'usb', 'camera must stay selected while the visitor page is hidden');
+  assert.deepEqual(await visitorSlide(usb), hiddenSlide,
+    'a hidden visitor page must not rotate slides or replace image URLs');
+  const hiddenHealth = await json('http://127.0.0.1:18081/_kiosk/health');
+  assert(Object.values(hiddenHealth.heartbeat_age_s).every(age => age !== null && age < 15));
+  console.log('PASS: hidden visitor slideshow stays idle without interrupting heartbeats');
   await json('http://127.0.0.1:18083/control/stale');
   await until(async () => await selected(usb) === 'visitor', 'stale MJPEG fallback', 15);
+  const visibleSlide = await visitorSlide(usb);
+  assert.equal(visibleSlide.visible, true);
+  await sleep(21000);
+  assert.notEqual((await visitorSlide(usb)).index, visibleSlide.index,
+    'the visitor slideshow must resume automatically when fallback is visible');
   console.log('PASS: HTTP 200 with stale frames falls back to offline visitor display');
   await json('http://127.0.0.1:18083/control/live');
   await until(async () => await selected(usb) === 'usb', 'MJPEG resumes after stale stream');
@@ -147,8 +185,6 @@ ThreadingHTTPServer(("127.0.0.1",18083),Handler).serve_forever()
   await until(async () => await selected(first) === 'visitor', 'first display visitor fallback', 15);
   const health = await json('http://127.0.0.1:18081/_kiosk/health');
   assert(Object.values(health.heartbeat_age_s).every(age => age !== null && age < 15));
-  const screenshot = await first('Page.captureScreenshot', { format:'png' });
-  if (process.env.KIOSK_SCREENSHOT) fs.writeFileSync(process.env.KIOSK_SCREENSHOT, Buffer.from(screenshot.data, 'base64'));
   const layout = await first('Runtime.evaluate', { expression:`(() => {
     const d = document.querySelector('#visitor iframe').contentDocument;
     return { overflow:d.documentElement.scrollHeight > d.defaultView.innerHeight,
@@ -156,18 +192,53 @@ ThreadingHTTPServer(("127.0.0.1",18083),Handler).serve_forever()
   })()`, returnByValue:true });
   assert.equal(layout.result.value.overflow, false);
   assert.equal(layout.result.value.images, true);
+  const rotation = (await first('Runtime.evaluate', { expression:`
+    document.querySelector('#visitor iframe').contentWindow.eval('slides.map(slide => slide.photo)')
+  `, returnByValue:true })).result.value;
+  assert.equal(rotation.length, 8, 'all eight gallery photos must be in the rotation');
+  assert.equal(new Set(rotation).size, rotation.length, 'photos must not repeat within the rotation');
+  const links = [
+    'https://ncngmodelrailroad.org/', 'https://ncngmodelrailroad.org/map/',
+    'https://ncngmodelrailroad.org/volunteer/', 'https://ncngmodelrailroad.org/donate/',
+  ];
   for (const [width, height] of [[1920,1080], [1280,720], [640,480]]) {
     await first('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor:1, mobile:false });
-    for (let i = 0; i < 4; i++) {
-      const result = await first('Runtime.evaluate', { expression:`(() => {
+    for (let i = 0; i < rotation.length; i++) {
+      const result = await first('Runtime.evaluate', { expression:`(async () => {
         const w = document.querySelector('#visitor iframe').contentWindow;
-        w.eval('index = ${i}; showSlide()');
-        return w.document.documentElement.scrollHeight <= w.innerHeight;
-      })()`, returnByValue:true });
-      assert.equal(result.result.value, true, `visitor slide ${i} overflows at ${width}x${height}`);
+        w.eval('paused = true; index = ${i}; showSlide()');
+        const d = w.document;
+        await Promise.all([...d.images].map(image => image.decode()));
+        return {
+          fits:d.documentElement.scrollHeight <= w.innerHeight && d.documentElement.scrollWidth <= w.innerWidth,
+          localImages:[...d.images].every(image => new URL(image.src).origin === location.origin),
+          photo:d.getElementById('photo').getAttribute('src'),
+          alt:d.getElementById('photo').alt, page:d.getElementById('page').textContent,
+          link:d.getElementById('link').href, qrAlt:d.getElementById('qr').alt,
+        };
+      })()`, awaitPromise:true, returnByValue:true });
+      assert.equal(result.exceptionDetails, undefined, `visitor slide ${i} failed to load`);
+      const slide = result.result.value;
+      assert.equal(slide.fits, true, `visitor slide ${i} overflows at ${width}x${height}`);
+      assert.equal(slide.localImages, true, 'slideshow assets must not need Internet');
+      assert.equal(slide.photo, rotation[i]);
+      assert(slide.alt.length > 10, 'every photo needs a descriptive alternative');
+      assert.equal(slide.page, `${i + 1} / ${rotation.length}`);
+      assert.equal(slide.link, links[i % links.length]);
+      assert.equal(slide.qrAlt, `QR code for ${slide.link}`);
+      if (process.env.KIOSK_SCREENSHOT && width === 1920) {
+        const file = path.parse(process.env.KIOSK_SCREENSHOT);
+        const name = i === 0 ? process.env.KIOSK_SCREENSHOT : path.join(file.dir, `${file.name}-${i + 1}.png`);
+        const screenshot = await first('Page.captureScreenshot', { format:'png' });
+        fs.writeFileSync(name, Buffer.from(screenshot.data, 'base64'));
+      }
     }
   }
-  console.log('PASS: offline visitor assets load without overflow and both pages heartbeat');
+  await first('Runtime.evaluate', { expression:`
+    document.querySelector('#visitor iframe').contentWindow.eval('paused = false')
+  ` });
+  await until(async () => (await visitorSlide(first)).index === 0, 'photo rotation wraps to the first slide', 25);
+  console.log('PASS: all eight offline photos, QR cards and loop wrap without overflow; both pages heartbeat');
 } catch (error) {
   for (let i = 0; i < children.length; i++) console.error(fs.readFileSync(path.join(dir, `child-${i}.log`), 'utf8').slice(-4000));
   throw error;

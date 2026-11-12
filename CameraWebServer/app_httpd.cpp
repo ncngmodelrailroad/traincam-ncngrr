@@ -2,6 +2,8 @@
 #include "esp_camera.h"
 #include "img_converters.h"
 #include <WiFi.h>
+#include <esp_wifi.h>
+#include <atomic>
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
@@ -11,6 +13,8 @@
 // reboots the WiFi recovery performs.
 extern uint32_t bootCount;
 extern uint32_t wifiRestartCount;
+extern uint32_t batteryMillivolts;
+extern float dieTemperatureC;
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char *_STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
@@ -31,6 +35,11 @@ httpd_handle_t stream_httpd = NULL;
 // being a second camera and starts serving the hall.
 httpd_handle_t camera_httpd = NULL;
 
+// Spare frames cost radio time, i.e. heat. Measured 2026-10-24 at SVGA q10 after
+// 5 min: uncapped (~25fps) 92.6C and climbing, 20fps 77-87C, 15fps 81-85C,
+// idle 68C. 0 = uncapped; change live with /control?fps=N.
+static std::atomic<int> maxFps{20};
+
 static esp_err_t stream_handler(httpd_req_t *req) {
   camera_fb_t *fb = NULL;
   struct timeval _timestamp;
@@ -46,7 +55,14 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
+  int64_t lastFrameUs = 0;
   while (true) {
+    const int fps = maxFps.load();
+    if (fps > 0) {
+      int64_t waitUs = 1000000 / fps - (esp_timer_get_time() - lastFrameUs);
+      if (waitUs > 0) vTaskDelay(pdMS_TO_TICKS(waitUs / 1000));
+    }
+    lastFrameUs = esp_timer_get_time();
     fb = esp_camera_fb_get();
     if (!fb) {
       log_e("Camera capture failed");
@@ -107,14 +123,20 @@ static esp_err_t index_handler(httpd_req_t *req) {
 // "is it up right now" - not "has it been rebooting all afternoon", which is
 // exactly what the WiFi recovery above needs to be checked against.
 static esp_err_t status_handler(httpd_req_t *req) {
-  char buf[224];
+  // Seeed moved the Sense module from OV2640 to OV3660 in 2025, and the two
+  // need different tuning; this says which one is actually in the car.
+  sensor_t *s = esp_camera_sensor_get();
+  char buf[288];
   int len = snprintf(
     buf, sizeof(buf),
     "{\"uptime_s\":%lu,\"heap\":%lu,\"min_heap\":%lu,\"rssi\":%d,"
-    "\"boots\":%lu,\"wifi_restarts\":%lu}",
+    "\"boots\":%lu,\"wifi_restarts\":%lu,\"battery_mv\":%lu,"
+    "\"temperature_c\":%.1f,\"sensor_pid\":\"0x%x\"}",
     (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap(),
     (unsigned long)ESP.getMinFreeHeap(), WiFi.RSSI(),
-    (unsigned long)bootCount, (unsigned long)wifiRestartCount);
+    (unsigned long)bootCount, (unsigned long)wifiRestartCount,
+    (unsigned long)batteryMillivolts, dieTemperatureC,
+    s ? (unsigned)s->id.PID : 0u);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -132,9 +154,37 @@ static esp_err_t control_handler(httpd_req_t *req) {
     return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no sensor");
   }
 
-  char query[64];
+  // Exposure and colour, so a layout darker than the bench can be tuned live
+  // rather than through flash cycles. Ranges are the esp32-camera sensor.h ones.
+  struct Knob { const char *key; int lo, hi; int (*set)(sensor_t *, int); };
+  static const Knob knobs[] = {
+    {"gainceiling", 0, 6, [](sensor_t *s, int v) { return s->set_gainceiling(s, (gainceiling_t)v); }},
+    {"aec2", 0, 1, [](sensor_t *s, int v) { return s->set_aec2(s, v); }},
+    {"ae_level", -2, 2, [](sensor_t *s, int v) { return s->set_ae_level(s, v); }},
+    {"aec", 0, 1, [](sensor_t *s, int v) { return s->set_exposure_ctrl(s, v); }},
+    {"aec_value", 0, 1200, [](sensor_t *s, int v) { return s->set_aec_value(s, v); }},
+    {"agc", 0, 1, [](sensor_t *s, int v) { return s->set_gain_ctrl(s, v); }},
+    {"agc_gain", 0, 30, [](sensor_t *s, int v) { return s->set_agc_gain(s, v); }},
+    {"brightness", -2, 2, [](sensor_t *s, int v) { return s->set_brightness(s, v); }},
+    {"contrast", -2, 2, [](sensor_t *s, int v) { return s->set_contrast(s, v); }},
+    {"saturation", -2, 2, [](sensor_t *s, int v) { return s->set_saturation(s, v); }},
+    {"awb", 0, 1, [](sensor_t *s, int v) { return s->set_whitebal(s, v); }},
+    {"awb_gain", 0, 1, [](sensor_t *s, int v) { return s->set_awb_gain(s, v); }},
+    {"wb_mode", 0, 4, [](sensor_t *s, int v) { return s->set_wb_mode(s, v); }},
+    {"lenc", 0, 1, [](sensor_t *s, int v) { return s->set_lenc(s, v); }},
+    {"bpc", 0, 1, [](sensor_t *s, int v) { return s->set_bpc(s, v); }},
+    {"wpc", 0, 1, [](sensor_t *s, int v) { return s->set_wpc(s, v); }},
+  };
+
+  char query[256];
   if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
     char val[8];
+    for (const Knob &k : knobs) {
+      if (httpd_query_key_value(query, k.key, val, sizeof(val)) == ESP_OK) {
+        int v = atoi(val);
+        if (v >= k.lo && v <= k.hi) k.set(s, v);
+      }
+    }
     // Clamped, not trusted. set_framesize() indexes the sensor's resolution
     // table with this, so an out-of-range value reads off the end of it.
     if (httpd_query_key_value(query, "framesize", val, sizeof(val)) == ESP_OK) {
@@ -147,12 +197,36 @@ static esp_err_t control_handler(httpd_req_t *req) {
       int q = atoi(val);
       if (q >= 4 && q <= 63) s->set_quality(s, q);
     }
+    if (httpd_query_key_value(query, "fps", val, sizeof(val)) == ESP_OK) {
+      int f = atoi(val);
+      if (f >= 0 && f <= 60) maxFps = f;
+    }
+    // Radio and CPU are most of the die heat. tx_power is in 0.25dBm steps
+    // (8 = 2dBm .. 84 = 21dBm); cpu_mhz 80/160/240.
+    if (httpd_query_key_value(query, "tx_power", val, sizeof(val)) == ESP_OK) {
+      int p = atoi(val);
+      if (p >= 8 && p <= 84) esp_wifi_set_max_tx_power(p);
+    }
+    if (httpd_query_key_value(query, "cpu_mhz", val, sizeof(val)) == ESP_OK) {
+      int m = atoi(val);
+      if (m == 80 || m == 160 || m == 240) setCpuFrequencyMhz(m);
+    }
   }
 
   // Echo what actually stuck, so a rejected value is visible rather than silent.
-  char buf[64];
-  int len = snprintf(buf, sizeof(buf), "{\"framesize\":%d,\"quality\":%d}",
-                     (int)s->status.framesize, (int)s->status.quality);
+  const camera_status_t &c = s->status;
+  int8_t txp = 0;
+  esp_wifi_get_max_tx_power(&txp);
+  char buf[384];
+  int len = snprintf(buf, sizeof(buf),
+    "{\"framesize\":%d,\"quality\":%d,\"gainceiling\":%d,\"aec2\":%d,"
+    "\"ae_level\":%d,\"aec\":%d,\"aec_value\":%d,\"agc\":%d,\"agc_gain\":%d,"
+    "\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,\"awb\":%d,"
+    "\"awb_gain\":%d,\"wb_mode\":%d,\"lenc\":%d,\"bpc\":%d,\"wpc\":%d,\"fps\":%d,\"tx_power\":%d,\"cpu_mhz\":%d}",
+    (int)c.framesize, (int)c.quality, (int)c.gainceiling, (int)c.aec2,
+    (int)c.ae_level, (int)c.aec, (int)c.aec_value, (int)c.agc, (int)c.agc_gain,
+    (int)c.brightness, (int)c.contrast, (int)c.saturation, (int)c.awb,
+    (int)c.awb_gain, (int)c.wb_mode, (int)c.lenc, (int)c.bpc, (int)c.wpc, maxFps.load(), (int)txp, (int)getCpuFrequencyMhz());
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, buf, len);

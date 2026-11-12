@@ -153,6 +153,108 @@ the playbook, so `/dev/i2c-1` does not exist and the gauge cannot be seen at all
 - Power: 5V via USB-C from battery bank
 - Runs `CameraWebServer` sketch for MJPEG streaming
 
+**Tuning the ESP32 live.** `:81/status` reports `sensor_pid` (`0x26` OV2640,
+`0x3660` OV3660 — Seeed changed the Sense module in 2025). `:81/control` takes
+`framesize`, `quality`, and the sensor's exposure and colour settings
+(`gainceiling` 0–6, `aec2`, `ae_level` -2–2, `aec`/`aec_value`, `agc`/`agc_gain`,
+`brightness`/`contrast`/`saturation`, `awb`/`awb_gain`/`wb_mode` 0–4, `lenc`,
+`bpc`, `wpc`), and echoes what stuck. Changes last until reboot; bake the winners
+into `setup()`. `fps=N` caps the frame rate (default 20; capture and WiFi can
+reduce the delivered rate; 0 = uncapped). With PSRAM, JPEG quality defaults to
+9. The OV2640 uses a 4x automatic gain ceiling (`gainceiling=1`) to recover
+shadow detail; automatic exposure and gain remain enabled. The camera clock
+is 20MHz.
+
+Measured 2026-10-24 (OV2640, SVGA): the Arduino core's prebuilt 5.7KB TCP send
+buffer capped the stream at ~8fps / 1.1Mbps (throughput ≈ buffer ÷ round-trip).
+`platformio.ini` rebuilds the core with 64KB TCP buffers and a wider WiFi TX
+window (`pio run -t upload`); the Arduino IDE build cannot change these. With
+it, uncapped:
+
+| framesize | quality | fps | KB/frame |
+|---|---|---|---|
+| 11 SVGA 800x600 | 10 (then default) | 25 | 39 |
+| 11 SVGA | 8 | 19 | 47 |
+| 11 SVGA | 6 | 10 | 59 |
+| 13 HD 1280x720 | 10 | 10 | 77 |
+| 15 UXGA 1600x1200 | 10 | 5 | 171 |
+
+Above SVGA the OV2640 drops to its slower full-resolution mode, and HD showed
+vertical stripe noise and a darker image; SVGA q10 was chosen in that round.
+With the original radio/CPU settings, the die ran hot:
+68°C idle (camera always capturing, WiFi power save off, battery charging),
+~80–87°C streaming at 20fps, 92°C+ uncapped — hence the default cap. Give it
+airflow in the car.
+
+The radio and CPU are most of that heat. A 6-minute soak per setting, streaming
+at the 20fps cap (temperature at the end):
+
+| tx_power | cpu_mhz | °C | fps | ping |
+|---|---|---|---|---|
+| 80 (20dBm) | 240 | 85 | 17 | 55ms |
+| 52 (13dBm) | 240 | 74 | 19 | 14ms |
+| 80 | 160 | 85 | 19 | 24ms |
+| 52 | 160 (default) | 69 | 20 | 10ms |
+
+That was at -48..-54dBm RSSI. If the car loses signal far from the router, raise
+the power live with `/control?tx_power=80` (8–84, in 0.25dBm steps); `cpu_mhz`
+takes 80/160/240. After a viewer disconnects the next one waits ~8s for the
+single stream slot (the server's 5s send timeout on the dead socket).
+
+Measured 2026-10-26 on the same OV2640: repeated bench comparisons selected
+JPEG quality 9 and the 4x gain ceiling. Dark objects were more visible and JPEG
+blocking was reduced, at the cost of more grain and larger frames. These are
+not fixed-gain or manual-exposure settings; very bright windows can still clip.
+
+| Settings | Delivered fps | Mean JPEG size |
+|---|---|---|
+| Previous: q10, 2x gain ceiling, 13dBm | 18.8–20.1 | 39–40KB |
+| New: q9, 4x gain ceiling, 13dBm (5-minute run after flashing) | 19.75 | 54.3KB |
+
+The final run delivered 8.58Mbps, with a highest reported die temperature of
+73.6°C, RSSI -48 to -50dBm, unchanged boot/WiFi-restart counters, and minimum
+free heap 150496 bytes. In that round, CPU 160MHz, XCLK 24MHz, SVGA and the
+20fps cap were unchanged. The 20MHz clock and higher TX power did not establish
+a clear win in that comparison; the daylight clock result below supersedes it.
+
+Earlier runs at -67 to -74dBm delivered only about 7–12fps. The later recovery
+to a stronger signal is not an image-setting improvement. These are stationary
+bench results, not proof of moving-train sharpness or enclosed-car cooling.
+To compare the previous image settings live, use
+`:81/control?quality=10&gainceiling=0`; reboot restores the new defaults.
+
+**Daylight clock comparison, 2026-10-27.** XGA (1024x768) at quality 9 showed
+strong vertical color stripes at 24MHz. Returning to 20MHz removed the strong
+stripe pattern; reflashing 24MHz reproduced it. The default is now 20MHz,
+with SVGA retained at about 20fps. XGA delivered about 12fps at 20MHz versus
+14–16fps with the striped 24MHz image, so it remains a live option rather than
+the default. Lower gain, contrast changes and quality 8 did not establish a
+better overall image in this daylight comparison.
+
+**Long stream pauses.** Average FPS hid occasional freezes. TCP traces showed
+out-of-order data during the gaps, before the receiver relay. The PlatformIO
+build now uses `CONFIG_LWIP_TCP_TMR_INTERVAL=25` instead of 250ms; the
+[ESP-IDF 5.5.5 setting](https://github.com/espressif/esp-idf/blob/v5.5.5/components/lwip/Kconfig)
+supports a shorter interval to speed recovery of unacknowledged packets.
+Reflashing the old build reproduced a 1.42s pause. Two 25ms runs, totaling eight
+minutes, had no gaps over one second; the final five-minute run delivered
+20.28fps, with a longest gap of 519ms and a final reported die temperature of
+69.6°C. A later two-minute daylight run still had a 1.84s gap: this is a
+mitigation, not a freeze fix. Temporary on-board timing at 20MHz subsequently
+recorded 590ms blocked in frame transmission, with no capture wait over 100ms
+in that three-minute run. The remaining delivery pauses are not explained by
+image quality or average FPS. The Arduino IDE build does not apply these SDK
+settings.
+
+The earlier `CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=64` override was ineffective:
+Arduino initializes its own 32-buffer dynamic configuration unless static
+buffers are explicitly enabled. It was removed. Static-buffer and TCP_NODELAY
+experiments did not establish a further improvement and were not retained.
+
+Low-light quality remains separate: testing 8x/16x/32x gain and longer manual
+exposure in the current near-dark scene did not reveal useful scene detail.
+Those changes were reverted rather than treating brighter noise as a fix.
+
 ## Physical Installation
 
 ```

@@ -170,7 +170,11 @@ exactly like a dead battery — but the Pi is running perfectly the whole time.
 | Gone, but the green ACT LED still flickers | This failure. WiFi is dead, the Pi is fine. |
 | Gone and completely dark | Actually a power problem. |
 
-**Confirm it after the fact** (the journal is persistent, so it survives):
+**Confirm it after the fact.** With `traincam_root_overlay: true` (overlayroot
+on tmpfs) the journal lives in RAM and is gone after any reboot, so check
+*before* rebooting, or tell a watchdog reset from a power loss with
+`sudo vcgencmd get_rsts` (`0x1020` = watchdog, `0x1000` = power-on). With a
+writable root the journal is persistent:
 
 ```bash
 journalctl -b -1 -k | grep -E "failed backplane access|status -110"

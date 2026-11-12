@@ -12,10 +12,10 @@ iframe { width:100%; height:100%; border:0; }
 </head>
 <body>
 <main>
-  <section id="pi" class="feed"><iframe title="Raspberry Pi TrainCam" src="/viewer.html?kiosk=1&amp;whepBase=http://{{ trainview_camera }}:{{ trainview_whep_port }}"></iframe></section>
-  <section id="esp32" class="feed"><iframe title="ESP32 TrainCam" src="/viewer.html?kiosk=1&amp;mjpeg=http://127.0.0.1:{{ trainview_esp32_relay_port }}/stream&amp;mjpegStatus=http://127.0.0.1:{{ trainview_esp32_relay_port }}/status"></iframe></section>
-  <section id="usb" class="feed"><iframe title="Local USB camera" src="/viewer.html?kiosk=1&amp;mjpeg=http://127.0.0.1:{{ trainview_usb_relay_port }}/stream&amp;mjpegStatus=http://127.0.0.1:{{ trainview_usb_relay_port }}/status"></iframe></section>
-  <section id="visitor" class="feed" hidden><iframe title="Explore the N.C.N.G. railroad" src="/visitor/index.html"></iframe></section>
+  <section id="pi" class="feed"><iframe title="Raspberry Pi TrainCam" data-src="/viewer.html?kiosk=1&amp;whepBase=http://{{ trainview_camera }}:{{ trainview_whep_port }}"></iframe></section>
+  <section id="esp32" class="feed"><iframe title="ESP32 TrainCam" data-src="/viewer.html?kiosk=1&amp;mjpeg=http://127.0.0.1:{{ trainview_esp32_relay_port }}/stream&amp;mjpegStatus=http://127.0.0.1:{{ trainview_esp32_relay_port }}/status"></iframe></section>
+  <section id="usb" class="feed"><iframe title="Local USB camera" data-src="/viewer.html?kiosk=1&amp;mjpeg=http://127.0.0.1:{{ trainview_usb_relay_port }}/stream&amp;mjpegStatus=http://127.0.0.1:{{ trainview_usb_relay_port }}/status"></iframe></section>
+  <section id="visitor" class="feed" hidden><iframe title="Explore the N.C.N.G. railroad" data-src="/visitor/index.html"></iframe></section>
 </main>
 <script src="/visitor/kiosk.js"></script>
 </body>
