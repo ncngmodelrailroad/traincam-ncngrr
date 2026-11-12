@@ -1,3 +1,4 @@
+#include "secrets.h" // Copy secrets.h.example to this ignored local file.
 #include "esp_camera.h"
 #include "WiFi.h"
 #include "esp_http_server.h"
@@ -6,8 +7,8 @@
 #include "esp_task_wdt.h" // Include for task watchdog functions
 
 // 🔹 Wi-Fi credentials
-const char* ssid = "traincameranet";
-const char* password = "locomotive";
+const char* ssid = TRAINCAM_WIFI_SSID;
+const char* password = TRAINCAM_WIFI_PASSWORD;
 
 // 🔹 ESP32-S3 Pin Configuration
 #define PWDN_GPIO_NUM  -1
