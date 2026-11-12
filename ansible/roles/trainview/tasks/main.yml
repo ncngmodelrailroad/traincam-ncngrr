@@ -170,6 +170,7 @@
     content: |
       # Native compositor hook: the Wayland display exists before this runs.
       systemctl --user daemon-reload
+      kanshi &
       systemctl --user restart traincam-kiosk.service &
 
 - name: Pin one kiosk window to each HDMI output

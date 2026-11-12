@@ -12,6 +12,11 @@ loads only ESP32 and Pi fallback viewers; the smaller screen loads only the
 USB viewer. Both load the local visitor page. This avoids starting camera
 connections only to discard them, without delaying startup or changing failover.
 
+The custom labwc autostart launches both `kanshi` and the browser service.
+It replaces the desktop's default autostart, so it must start `kanshi`
+explicitly to apply the saved HDMI positions when displays connect.
+Healthy page heartbeats alone do not prove the windows are on the right screens.
+
 Eight distinct layout photos rotate every 20 seconds (a 2-minute-40-second
 photo loop). The four visitor messages and QR codes for the website, historic
 map, volunteering, and donation inquiries repeat across those photos.

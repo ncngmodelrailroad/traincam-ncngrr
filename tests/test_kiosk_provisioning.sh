@@ -21,7 +21,23 @@ grep -q 'ExecStartPre=/bin/rm -rf %t/traincam-chromium-profile-1 %t/traincam-chr
 python3 - <<'PY'
 import io
 import subprocess
+import textwrap
 from pathlib import Path
+
+tasks = Path("ansible/roles/trainview/tasks/main.yml").read_text()
+startup = tasks.split("- name: Start kiosk from labwc session\n", 1)[1].split("\n- name:", 1)[0]
+startup = textwrap.dedent(startup.split("    content: |\n", 1)[1])
+result = subprocess.run(
+    ["/bin/sh", "-c",
+     'systemctl() { printf "systemctl %s\\n" "$*"; }\n'
+     'kanshi() { printf "kanshi\\n"; }\n' + startup + "\nwait\n"],
+    capture_output=True, text=True, check=True, timeout=5,
+)
+assert sorted(result.stdout.splitlines()) == [
+    "kanshi",
+    "systemctl --user daemon-reload",
+    "systemctl --user restart traincam-kiosk.service",
+], "the custom desktop autostart must launch both the display profile manager and browser"
 
 unit = Path("ansible/roles/trainview/templates/traincam-kiosk.service.j2").read_text()
 first, second = unit.split("--class=TrainCam-HDMI-2")
